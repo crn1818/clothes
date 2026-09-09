@@ -1,0 +1,15 @@
+{
+  "name": "Croma — o look do dia em paletas",
+  "short_name": "Croma",
+  "description": "Rede social do look do dia com paleta automatica e etiquetas nas pecas.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12100E",
+  "theme_color": "#12100E",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-mask.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
