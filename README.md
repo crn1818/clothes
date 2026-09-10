@@ -178,14 +178,24 @@ embutidas, e restaura a partir dele. Restaurar não sobrescreve o que já existe
 looks com o mesmo id são pulados, para não apagar curtidas e salvos posteriores
 ao backup.
 
-## Ligar o modo rede
+## Modo rede: já ligado neste repositório
+
+Este repositório aponta para um projeto Supabase real, com as credenciais em
+`.env.production` — versionadas de propósito, porque a chave `sb_publishable_`
+é pública por natureza: ela vai dentro do JavaScript que qualquer visitante
+baixa. Quem protege os dados é o RLS, verificado contra o projeto de verdade:
+insert anônimo em `posts` volta `42501` (insufficient_privilege).
+
+**Nunca ponha a `service_role` key ali** — essa ignora o RLS inteiro.
+
+Para apontar para outro projeto Supabase:
 
 1. Crie um projeto em <https://supabase.com>
 2. SQL Editor → cole `supabase/schema.sql` → Run (pode rodar mais de uma vez)
-3. Project Settings → API → copie a **URL** e a **anon key**
-4. No Croma: **Ajustes → Modo rede → Ligar** e cole as duas
-
-Ou, para deixar fixo no build, ponha as duas em `.env` (veja `.env.example`).
+3. Project Settings → API → copie a **URL** e a chave **publishable**
+   (a `anon` legada em JWT também serve)
+4. Troque as duas em `.env.production`, ou use **Ajustes → Modo rede** no app
+   para apontar sem rebuildar
 
 O que o schema cria: perfis, looks, peças etiquetadas, curtidas, salvos,
 seguidores, a view `feed` com as contagens resolvidas, RLS por dono em tudo e o
@@ -212,14 +222,22 @@ modos — é barato e evita processar imagem no servidor.
 - Não há comentários nem seguir de verdade — a camada social é curtir e salvar.
   A tabela `seguidores` existe no schema, a interface não.
 - Não dá para editar um look publicado, só apagar.
-- O modo rede foi escrito e tipado, mas **nunca rodou contra um projeto
-  Supabase de verdade** — o local foi verificado tela a tela, o remoto não.
+- No modo rede, os caminhos **autenticados** (cadastro, publicar, curtir,
+  salvar) ainda não foram exercitados de ponta a ponta. O que foi verificado
+  contra o projeto real: conexão, leitura das seis tabelas e da view, o bucket
+  respondendo, e o RLS recusando escrita anônima.
 
 ## Publicar
+
+O caminho recomendado é importar este repositório em
+<https://vercel.com/new>: o Vite é detectado sozinho e o `.env.production`
+versionado já dá as credenciais ao build, então não há nada para configurar.
+Feito isso, todo `git push` na `main` vira deploy.
+
+Alternativa sem git, enviando `dist/` pela API REST:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File deploy-vercel.ps1 -Token SEU_TOKEN
 ```
 
-Roda o build e envia `dist/` para a Vercel. O token sai de
-<https://vercel.com/account/settings/tokens>.
+O token sai de <https://vercel.com/account/settings/tokens>.
