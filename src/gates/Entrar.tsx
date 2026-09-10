@@ -35,7 +35,18 @@ export function Entrar() {
         const { data, error } = await auth.signUp({
           email: email.trim(),
           password: senha,
-          options: { data: { nome: nome.trim() } },
+          options: {
+            data: { nome: nome.trim() },
+            // Sem isto, o link de confirmação usa a "Site URL" do projeto, que
+            // nasce apontando para localhost — quem se cadastrasse pelo site
+            // publicado clicaria no e-mail e cairia no nada. Mandar a origem
+            // atual faz o link voltar para onde a pessoa realmente está, seja
+            // o domínio publicado ou a máquina de quem desenvolve.
+            //
+            // O Supabase só honra este valor se a origem estiver na lista de
+            // Redirect URLs do projeto; fora dela, ele cai na Site URL.
+            emailRedirectTo: window.location.origin,
+          },
         });
         if (error) throw error;
         // Com confirmação de e-mail ligada no projeto, não vem sessão na hora.
