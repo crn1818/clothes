@@ -180,22 +180,31 @@ ao backup.
 
 ## Modo rede: já ligado neste repositório
 
-Este repositório aponta para um projeto Supabase real, com as credenciais em
-`.env.production` — versionadas de propósito, porque a chave `sb_publishable_`
-é pública por natureza: ela vai dentro do JavaScript que qualquer visitante
-baixa. Quem protege os dados é o RLS, verificado contra o projeto de verdade:
-insert anônimo em `posts` volta `42501` (insufficient_privilege).
+O app sobe apontando para um projeto Supabase real. As credenciais estão em
+`src/lib/config-rede.ts`, em código e versionadas de propósito: a chave
+`sb_publishable_` é pública por natureza — vai dentro do JavaScript que
+qualquer visitante baixa. Quem protege os dados é o RLS, verificado contra o
+projeto de verdade: insert anônimo em `posts` volta `42501`.
 
 **Nunca ponha a `service_role` key ali** — essa ignora o RLS inteiro.
 
-Para apontar para outro projeto Supabase:
+Ficaram em código, e não em `.env.production`, porque `.env` versionado
+funcionava no build local mas **não chegou ao build da Vercel**: o app
+publicado subiu em modo local, com feed vazio e sem tela de entrada. Constante
+em código não depende de o host repassar arquivo nenhum.
+
+Para apontar para outro projeto Supabase, na ordem de precedência:
 
 1. Crie um projeto em <https://supabase.com>
 2. SQL Editor → cole `supabase/schema.sql` → Run (pode rodar mais de uma vez)
 3. Project Settings → API → copie a **URL** e a chave **publishable**
    (a `anon` legada em JWT também serve)
-4. Troque as duas em `.env.production`, ou use **Ajustes → Modo rede** no app
-   para apontar sem rebuildar
+4. Use **Ajustes → Modo rede** no app (não precisa rebuildar), ou defina
+   `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` no build, ou edite
+   `config-rede.ts`
+
+Para voltar ao modo local (sem conta, tudo no navegador): **Ajustes → Modo
+rede → Desligar**.
 
 O que o schema cria: perfis, looks, peças etiquetadas, curtidas, salvos,
 seguidores, a view `feed` com as contagens resolvidas, RLS por dono em tudo e o
@@ -230,9 +239,13 @@ modos — é barato e evita processar imagem no servidor.
 ## Publicar
 
 O caminho recomendado é importar este repositório em
-<https://vercel.com/new>: o Vite é detectado sozinho e o `.env.production`
-versionado já dá as credenciais ao build, então não há nada para configurar.
-Feito isso, todo `git push` na `main` vira deploy.
+<https://vercel.com/new>: o Vite é detectado sozinho e as credenciais já estão
+no código, então não há variável de ambiente para configurar. Feito isso, todo
+`git push` na `main` vira deploy.
+
+Se o projeto vier com **Deployment Protection** ligada, desligue em Project
+Settings → Deployment Protection; com ela, só quem está logado na sua conta
+Vercel abre o site.
 
 Alternativa sem git, enviando `dist/` pela API REST:
 
