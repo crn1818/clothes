@@ -241,3 +241,16 @@ create policy "apago da minha pasta" on storage.objects for delete
     bucket_id = 'looks'
     and (storage.foldername(name))[1] = auth.uid()::text
   );
+
+-- ---------------------------------------------------------------------------
+-- criar_perfil() é gatilho, não endpoint
+--
+-- Sendo SECURITY DEFINER e morando no schema `public`, ela fica exposta em
+-- /rest/v1/rpc/criar_perfil para anon e authenticated — foi o que o linter de
+-- segurança do Supabase apontou. O gatilho continua funcionando sem EXECUTE
+-- para esses papéis: ele roda como dono da tabela.
+-- ---------------------------------------------------------------------------
+
+revoke execute on function public.criar_perfil() from public;
+revoke execute on function public.criar_perfil() from anon;
+revoke execute on function public.criar_perfil() from authenticated;

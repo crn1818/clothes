@@ -341,7 +341,10 @@ function SecaoRede({
             <li>
               No SQL Editor, rode o arquivo <code>supabase/schema.sql</code> do projeto
             </li>
-            <li>Copie a URL e a anon key em Project Settings → API</li>
+            <li>
+              Copie a URL e a chave <em>publishable</em> (ou a anon legada) em
+              Project Settings → API
+            </li>
           </ol>
 
           {erro && <div className="aviso erro">{erro}</div>}
@@ -357,12 +360,12 @@ function SecaoRede({
           </label>
 
           <label className="campo">
-            <span className="campo-rotulo">Anon key (pública)</span>
+            <span className="campo-rotulo">Chave pública</span>
             <textarea
               className="area"
               style={{ minHeight: 60, fontSize: 12, fontFamily: 'monospace' }}
               value={chave}
-              placeholder="eyJhbGciOi…"
+              placeholder="sb_publishable_… ou eyJhbGciOi…"
               onChange={(e) => setChave(e.target.value)}
             />
           </label>
@@ -382,8 +385,8 @@ function SecaoRede({
           </div>
 
           <p className="mini" style={{ marginTop: 8 }}>
-            A anon key é pública por natureza — ela vai no navegador de qualquer jeito.
-            Quem protege os dados é o RLS do <code>schema.sql</code>.
+            Essa chave é pública por natureza — ela vai no navegador de qualquer
+            jeito. Quem protege os dados é o RLS do <code>schema.sql</code>.
           </p>
         </>
       )}

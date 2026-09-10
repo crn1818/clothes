@@ -110,8 +110,10 @@ export async function testarConfig(cfg: ConfigRede): Promise<string | null> {
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(cfg.url.trim())) {
     return 'A URL deve ser parecida com https://xxxxxxxx.supabase.co';
   }
+  // Servem as duas: a publishable moderna (sb_publishable_…) e a anon legada
+  // (JWT começando em eyJ). O SDK aceita ambas na mesma posição.
   if (cfg.anonKey.trim().length < 40) {
-    return 'A anon key parece curta demais — confira se copiou inteira.';
+    return 'A chave parece curta demais — confira se copiou inteira.';
   }
 
   try {
