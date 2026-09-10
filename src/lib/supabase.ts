@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { REDE_PADRAO } from './config-rede';
 
 /*
  * O SDK do Supabase entra por `import()` e não pelo topo do arquivo.
@@ -12,21 +13,19 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 /**
  * Configuração do modo rede.
  *
- * As credenciais vêm de dois lugares, nesta ordem:
- *  1. variáveis do build (`.env`: VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)
- *  2. localStorage, preenchido pela tela de Ajustes
+ * O app sobe em rede por padrão, apontando para o projeto de `config-rede.ts`.
+ * Variáveis `VITE_*` do build sobrescrevem isso, a tela de Ajustes também, e
+ * quem quiser o modo local (sem conta, tudo no navegador) desliga por lá.
  *
- * Sem nenhuma das duas o Croma roda local, e é isso que faz a versão publicada
- * funcionar para quem só quer olhar: não existe estado "configurando", existe
- * um app inteiro que funciona sozinho e um botão para ligá-lo na rede.
- *
- * A anon key é pública por natureza — ela vai no bundle do navegador de
- * qualquer jeito. Quem protege os dados é o RLS do `supabase/schema.sql`,
- * nunca o segredo da chave.
+ * Depender só de `.env` mordeu: o arquivo estava versionado e o build local o
+ * lia, mas o build da Vercel saiu sem as duas variáveis e o app publicado
+ * subiu em modo local, com feed vazio e sem tela de entrada. Constante em
+ * código não depende de o host repassar nada.
  */
 
 const LS_URL = 'croma.supabase.url';
 const LS_KEY = 'croma.supabase.anonKey';
+const LS_LOCAL = 'croma.modoLocal';
 
 export interface ConfigRede {
   url: string;
@@ -39,7 +38,23 @@ function doAmbiente(): ConfigRede | null {
   return url && anonKey ? { url, anonKey } : null;
 }
 
+function forcadoLocal(): boolean {
+  try {
+    return localStorage.getItem(LS_LOCAL) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ordem de precedência: pedido explícito de modo local, depois variáveis do
+ * build, depois o que a tela de Ajustes gravou, e por fim o projeto padrão do
+ * app. A última linha é o que garante que a versão publicada suba em rede
+ * mesmo que o host não repasse nenhum `.env`.
+ */
 export function lerConfig(): ConfigRede | null {
+  if (forcadoLocal()) return null;
+
   const env = doAmbiente();
   if (env) return env;
 
@@ -50,10 +65,11 @@ export function lerConfig(): ConfigRede | null {
   } catch {
     /* localStorage bloqueado (janela anônima, cookies desligados) */
   }
-  return null;
+
+  return { url: REDE_PADRAO.url, anonKey: REDE_PADRAO.anonKey };
 }
 
-/** O `.env` vence a tela de Ajustes; nesse caso não faz sentido deixar editar. */
+/** Com credenciais vindas do build, editar por Ajustes não teria efeito. */
 export function configFixaNoBuild(): boolean {
   return doAmbiente() !== null;
 }
@@ -61,12 +77,20 @@ export function configFixaNoBuild(): boolean {
 export function salvarConfig(cfg: ConfigRede): void {
   localStorage.setItem(LS_URL, cfg.url.trim().replace(/\/+$/, ''));
   localStorage.setItem(LS_KEY, cfg.anonKey.trim());
+  localStorage.removeItem(LS_LOCAL);
   cliente = null;
 }
 
+/**
+ * Volta para o modo local.
+ *
+ * Precisa gravar uma marca em vez de só apagar as chaves: como existe um
+ * projeto padrão em código, apagar não faria o app esquecer nada.
+ */
 export function limparConfig(): void {
   localStorage.removeItem(LS_URL);
   localStorage.removeItem(LS_KEY);
+  localStorage.setItem(LS_LOCAL, '1');
   cliente = null;
 }
 
