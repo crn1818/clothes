@@ -18,6 +18,8 @@ export interface ExtractOptions {
   clusters?: number;
   /** Descarta cores que ocupem menos que isto do look (0..1). */
   minShare?: number;
+  /** Deixe false para manter a cor de pele na paleta. Padrão: remover. */
+  removerPele?: boolean;
 }
 
 interface Amostra {
@@ -170,6 +172,281 @@ function marcarFundo(w: number, h: number, labs: Lab[], opaco: Uint8Array): Uint
 }
 
 /* ==========================================================================
+   Tirar a pele da paleta
+   ========================================================================== */
+
+/**
+ * Fatia da altura do sujeito, a partir do topo, onde procurar o rosto.
+ *
+ * Estreito de propósito: com 0.28 a banda pegava ombro e gola, e aí o rosto
+ * virava minoria. Numa foto de corpo inteiro a cabeça cabe nos primeiros 15%.
+ */
+const BANDA_ROSTO = 0.16;
+/** Escore mínimo para um pixel da banda entrar na conta da referência. */
+const ESCORE_MIN_ROSTO = 0.4;
+/** Fatia mínima da banda com cara de pele para a referência valer. */
+const MIN_ROSTO = 0.12;
+/** Distância até a referência para um pixel do topo virar semente de pele. */
+const TOL_SEMENTE_PELE = 0.04;
+/** Salto máximo entre vizinhos para a pele continuar se espalhando. */
+const TOL_VIZINHO_PELE = 0.022;
+/** Afastamento máximo da semente — impede subir a escada até a roupa. */
+const TOL_PELE_GLOBAL = 0.055;
+/** Acima disto do sujeito, não é pele sobrando: é o look. Não remove. */
+const MAX_PELE = 0.45;
+/**
+ * Distância da referência para uma cor da paleta ser apontada como pele.
+ *
+ * Apertada de propósito, e o número saiu de medir. Braço e perna são
+ * *literalmente* o mesmo tom do rosto — mesma pessoa, mesma luz —, então caem
+ * a 0.005–0.014 da referência. Roupa que apenas se parece com pele fica bem
+ * mais longe: nos looks de exemplo, o casaco camel ficou a 0.039 e a saia
+ * rosa-chá a 0.044. Existe um vão entre os dois grupos, e 0.025 fica no meio
+ * dele. Com 0.05 o camel e a rosa-chá sumiam da paleta — apagar uma peça do
+ * look é justamente o que não pode acontecer.
+ */
+const TOL_SUSPEITA_PELE = 0.025;
+
+/** A paleta nunca pode ficar sem nenhuma cor por causa de suspeitas. */
+const MIN_CORES_APOS_SUSPEITA = 1;
+
+/**
+ * O quanto uma cor parece pele, de 0 a 1.
+ *
+ * Serve só para **escolher** entre os grupos da banda do rosto — nunca para
+ * decidir sozinho o que sai da paleta. Pele humana, de qualquer etnia, ocupa
+ * h 41..70 em OKLCh, e nessa mesma faixa moram nude, caramelo, canela, tabaco,
+ * castanho, terracota, marrom, chocolate, café e camel. Medido: 14 de 23 cores
+ * quentes de roupa caem dentro da faixa da pele, e camel (h 72, C 0.092,
+ * L 0.66) é praticamente indistinguível de uma pele oliva (h 65, C 0.115,
+ * L 0.67). Um filtro por cor apagaria justamente as paletas terrosas.
+ */
+function escorePele(lab: Lab): number {
+  const { L, C, h } = labToLch(lab);
+  if (L < 0.18 || L > 0.96) return 0;
+  if (C < 0.03 || C > 0.15) return 0;
+
+  const dh = Math.abs(h - 57);
+  const distH = Math.min(dh, 360 - dh);
+  const porMatiz = Math.exp(-(distH * distH) / (2 * 17 * 17));
+  // Fora da faixa de croma típica ainda pode ser pele, mas perde força.
+  const porCroma = C >= 0.035 && C <= 0.13 ? 1 : 0.4;
+
+  return porMatiz * porCroma;
+}
+
+interface Candidato {
+  lab: Lab;
+  /** 0 no topo da banda, 1 na base dela. */
+  altura: number;
+  /** 0 no eixo do corpo, 1 na borda lateral da linha. */
+  desvio: number;
+}
+
+/**
+ * Separa os dois tons da cabeça e devolve o que é rosto.
+ *
+ * Duas tentativas anteriores erraram aqui:
+ *
+ * - **Média de tudo que parece pele.** Cabelo castanho passa no mesmo filtro,
+ *   e a média dos dois dava uma cor que não existe na foto — longe demais de
+ *   rosto e de cabelo para achar semente. Detectava e não removia nada.
+ * - **Separar por luminosidade e escolher pelo escore.** Castanho-médio fica
+ *   em h=58, o centro exato do modelo de pele, e pontua *acima* de uma pele
+ *   clara em h=67. O cabelo ganhava, e a referência saía com erro de 0.35.
+ *
+ * Cor não separa cabelo de rosto. Posição separa: o cabelo cobre o alto e as
+ * laterais da cabeça, o rosto fica embaixo e no eixo do corpo. Por isso a
+ * escolha pesa escore, altura dentro da banda e proximidade do centro.
+ */
+function separarRostoDoCabelo(candidatos: Candidato[]): Lab | null {
+  if (candidatos.length < 25) return null;
+
+  let minL = Infinity;
+  let maxL = -Infinity;
+  for (const c of candidatos) {
+    if (c.lab.L < minL) minL = c.lab.L;
+    if (c.lab.L > maxL) maxL = c.lab.L;
+  }
+
+  // Tom só na cabeça: não há o que separar.
+  if (maxL - minL < 0.08) return media(candidatos);
+
+  /* k-means de uma dimensão sobre L, iniciado nos extremos — determinístico,
+     ao contrário de sortear centros. */
+  let centroA = minL;
+  let centroB = maxL;
+  let grupoA: Candidato[] = [];
+  let grupoB: Candidato[] = [];
+
+  for (let it = 0; it < 8; it++) {
+    grupoA = [];
+    grupoB = [];
+    for (const c of candidatos) {
+      (Math.abs(c.lab.L - centroA) <= Math.abs(c.lab.L - centroB) ? grupoA : grupoB).push(c);
+    }
+    if (grupoA.length === 0 || grupoB.length === 0) break;
+    const novoA = grupoA.reduce((s, c) => s + c.lab.L, 0) / grupoA.length;
+    const novoB = grupoB.reduce((s, c) => s + c.lab.L, 0) / grupoB.length;
+    if (Math.abs(novoA - centroA) < 1e-4 && Math.abs(novoB - centroB) < 1e-4) break;
+    centroA = novoA;
+    centroB = novoB;
+  }
+
+  const modos = [grupoA, grupoB].filter((g) => g.length >= 12);
+  if (modos.length === 0) return media(candidatos);
+  if (modos.length === 1) return media(modos[0]);
+
+  const nota = (grupo: Candidato[]) => {
+    const cor = media(grupo);
+    const altura = grupo.reduce((s, c) => s + c.altura, 0) / grupo.length;
+    const desvio = grupo.reduce((s, c) => s + c.desvio, 0) / grupo.length;
+    return escorePele(cor) * (0.3 + 0.7 * altura) * (1 - 0.45 * desvio);
+  };
+
+  return media(nota(grupoA) >= nota(grupoB) ? grupoA : grupoB);
+}
+
+function media(lista: Candidato[]): Lab {
+  const soma = lista.reduce(
+    (s, c) => ({ L: s.L + c.lab.L, a: s.a + c.lab.a, b: s.b + c.lab.b }),
+    { L: 0, a: 0, b: 0 },
+  );
+  return { L: soma.L / lista.length, a: soma.a / lista.length, b: soma.b / lista.length };
+}
+
+/**
+ * Marca os pixels de pele, espalhando a partir do rosto.
+ *
+ * Casar por cor não serve, e a medição diz por quê: **toda** tonalidade de
+ * pele fica a menos de 0.055 de alguma cor de roupa comum — pele clara está a
+ * 0.020 do nude e a 0.024 do bege, pele oliva a 0.030 do camel, pele marrom a
+ * 0.013 do tabaco, pele muito escura a 0.009 do chocolate. Com qualquer
+ * tolerância útil, tirar "o que parece pele" apagaria o casaco bege de quem
+ * tem pele clara. Apagar uma peça do look é pior do que deixar pele na paleta.
+ *
+ * Então a regra é rastreabilidade: só sai o que dá para ligar ao rosto. Acha-se
+ * a cor da pele *desta pessoa* no topo do corpo — onde a cabeça está — e dali
+ * o espalhamento caminha pixel a pixel, como o do fundo. Rosto e pescoço saem
+ * juntos; ombros e colo também, quando estão à mostra. Uma peça só seria
+ * atingida se encostasse no rosto **e** fosse da mesma cor dele.
+ *
+ * O preço é braço e perna separados do rosto por tecido, que continuam na
+ * paleta. É o lado certo para errar, e o compositor deixa tirar à mão.
+ *
+ * Devolve null quando não há rosto: flat lay, foto só da peça, corpo cortado.
+ */
+function marcarPele(
+  w: number,
+  h: number,
+  labs: Lab[],
+  opaco: Uint8Array,
+  fundo: Uint8Array,
+): { mascara: Uint8Array; referencia: Lab } | null {
+  let topo = h;
+  let base = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!opaco[i] || fundo[i]) continue;
+      if (y < topo) topo = y;
+      if (y > base) base = y;
+      break;
+    }
+  }
+  if (base < 0 || base <= topo) return null;
+
+  const limite = topo + Math.max(1, Math.round((base - topo) * BANDA_ROSTO));
+
+  /* Média dos pixels da banda que têm cara de pele.
+   *
+   * Antes isto agrupava a banda em três e escolhia o grupo mais parecido com
+   * pele. Era uma loteria: numa foto de moletom cinza o k-means juntou rosto e
+   * moletom num só grupo bege-acinzentado (87% da banda, escore zero) e a
+   * referência simplesmente não saía. Filtrar por escore e tirar a média é
+   * determinístico — não depende de onde a inicialização caiu. */
+  let nBanda = 0;
+  const candidatos: Candidato[] = [];
+  const alturaBanda = Math.max(1, limite - topo);
+
+  for (let y = topo; y <= limite; y++) {
+    /* Extensão do corpo nesta linha, para medir desvio em relação ao eixo. */
+    let esq = -1;
+    let dir = -1;
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!opaco[i] || fundo[i]) continue;
+      if (esq < 0) esq = x;
+      dir = x;
+    }
+    if (esq < 0) continue;
+    const eixo = (esq + dir) / 2;
+    const meia = Math.max(1, (dir - esq) / 2);
+
+    for (let x = esq; x <= dir; x++) {
+      const i = y * w + x;
+      if (!opaco[i] || fundo[i]) continue;
+      nBanda++;
+      if (escorePele(labs[i]) < ESCORE_MIN_ROSTO) continue;
+      candidatos.push({
+        lab: labs[i],
+        altura: (y - topo) / alturaBanda,
+        desvio: Math.min(1, Math.abs(x - eixo) / meia),
+      });
+    }
+  }
+
+  if (nBanda < 40 || candidatos.length < 25 || candidatos.length < nBanda * MIN_ROSTO) {
+    return null;
+  }
+
+  const referencia = separarRostoDoCabelo(candidatos);
+  if (!referencia) return null;
+
+  /* Espalhamento a partir do rosto, mesma mecânica do fundo: passo local
+     pequeno e trava global contra a semente. */
+  const mascara = new Uint8Array(w * h);
+  const fila: number[] = [];
+
+  for (let y = topo; y <= limite; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!opaco[i] || fundo[i] || mascara[i]) continue;
+      if (deltaE(labs[i], referencia) < TOL_SEMENTE_PELE) {
+        mascara[i] = 1;
+        fila.push(i);
+      }
+    }
+  }
+  if (fila.length === 0) return null;
+
+  for (let p = 0; p < fila.length; p++) {
+    const i = fila[p];
+    const x = i % w;
+    const y = (i / w) | 0;
+    const atual = labs[i];
+
+    const visitar = (j: number) => {
+      if (mascara[j] || fundo[j] || !opaco[j]) return;
+      if (
+        deltaE(labs[j], atual) < TOL_VIZINHO_PELE &&
+        deltaE(labs[j], referencia!) < TOL_PELE_GLOBAL
+      ) {
+        mascara[j] = 1;
+        fila.push(j);
+      }
+    };
+
+    if (x > 0) visitar(i - 1);
+    if (x < w - 1) visitar(i + 1);
+    if (y > 0) visitar(i - w);
+    if (y < h - 1) visitar(i + w);
+  }
+
+  return { mascara, referencia };
+}
+
+/* ==========================================================================
    Agrupamento das cores
    ========================================================================== */
 
@@ -297,14 +574,43 @@ function fundir(grupos: Grupo[], limite: number): Grupo[] {
  * mudaria o resultado). Devolve as cores dominantes ordenadas por presença,
  * cada uma com nome em português.
  */
-export function extractPalette(data: ImageData, options: ExtractOptions = {}): PaletteColor[] {
+export interface AnalisePaleta {
+  cores: PaletteColor[];
+  /**
+   * A cor identificada como pele e tirada da paleta, se houve. A interface
+   * mostra qual foi e deixa desfazer: o acerto é bom, mas não é infalível, e
+   * a pessoa que tirou a foto sabe melhor do que o algoritmo.
+   */
+  pele?: PaletteColor;
+  /**
+   * Cores que continuaram na paleta mas ficaram muito perto da pele detectada
+   * — tipicamente braço e perna, que o tecido separa do rosto. O compositor
+   * traz estas desmarcadas, à espera de confirmação.
+   */
+  suspeitasDePele: string[];
+}
+
+function nomear(lab: Lab, share: number): PaletteColor & { L: number } {
+  const hex = labToHex(lab);
+  const achado = nameOf(hex);
+  return {
+    hex,
+    name: achado.name,
+    family: familiaDe(hex, achado),
+    share,
+    L: labToLch(lab).L,
+  };
+}
+
+/** Versão completa: devolve também o que foi removido, para a interface. */
+export function analisarFoto(data: ImageData, options: ExtractOptions = {}): AnalisePaleta {
   const max = options.max ?? 5;
   const k = options.clusters ?? 8;
   const minShare = options.minShare ?? 0.03;
 
   const { width: w, height: h, data: px } = data;
   const total = w * h;
-  if (total === 0) return [];
+  if (total === 0) return { cores: [], suspeitasDePele: [] };
 
   const labs: Lab[] = new Array(total);
   const opaco = new Uint8Array(total);
@@ -324,21 +630,64 @@ export function extractPalette(data: ImageData, options: ExtractOptions = {}): P
     return 0.7 + 0.6 * Math.exp(-1.4 * (nx * nx + ny * ny * 0.75));
   };
 
-  const roupa: Amostra[] = [];
+  const achadoPele =
+    options.removerPele === false ? null : marcarPele(w, h, labs, opaco, fundo);
+
   const tudo: Amostra[] = [];
+  const sujeito: Amostra[] = [];
+  const semPele: Amostra[] = [];
+  let pesoSujeito = 0;
+  let pesoPele = 0;
+  let somaPele: Lab = { L: 0, a: 0, b: 0 };
+
   for (let i = 0; i < total; i++) {
     if (!opaco[i]) continue;
     const amostra = { lab: labs[i], peso: pesoDe(i) };
     tudo.push(amostra);
-    if (!fundo[i]) roupa.push(amostra);
+    if (fundo[i]) continue;
+
+    sujeito.push(amostra);
+    pesoSujeito += amostra.peso;
+
+    if (achadoPele?.mascara[i]) {
+      pesoPele += amostra.peso;
+      somaPele = {
+        L: somaPele.L + amostra.lab.L * amostra.peso,
+        a: somaPele.a + amostra.lab.a * amostra.peso,
+        b: somaPele.b + amostra.lab.b * amostra.peso,
+      };
+    } else {
+      semPele.push(amostra);
+    }
   }
 
-  if (tudo.length === 0) return [];
+  if (tudo.length === 0) return { cores: [], suspeitasDePele: [] };
+
+  /* A pele sai da conta, menos quando ela é boa parte do sujeito: em foto de
+     praia ou corpo, removê-la deixaria a paleta sem o que descrever. */
+  const peleValida =
+    achadoPele !== null &&
+    pesoPele > 0 &&
+    pesoPele <= pesoSujeito * MAX_PELE &&
+    semPele.length > sujeito.length * 0.25;
+
+  let pele: PaletteColor | undefined;
+  if (peleValida) {
+    const media: Lab = {
+      L: somaPele.L / pesoPele,
+      a: somaPele.a / pesoPele,
+      b: somaPele.b / pesoPele,
+    };
+    const { L: _ignorado, ...cor } = nomear(media, pesoPele / pesoSujeito);
+    pele = cor;
+  }
+
+  const doSujeito = peleValida ? semPele : sujeito;
 
   /* Válvula de segurança para o caso extremo: look da exata cor da parede, ou
      foto que é quase toda fundo. O limite é baixo de propósito — mesmo um
      recorte pobre da roupa descreve o look melhor do que a parede inteira. */
-  const amostras = roupa.length > tudo.length * 0.06 ? roupa : tudo;
+  const amostras = doSujeito.length > tudo.length * 0.06 ? doSujeito : tudo;
 
   const grupos = fundir(kmeans(amostras, k, 14), 0.058);
   const somaGrupos = grupos.reduce((s, g) => s + g.peso, 0) || 1;
@@ -351,20 +700,38 @@ export function extractPalette(data: ImageData, options: ExtractOptions = {}): P
 
   // Renormaliza para que as cores mostradas somem 100%.
   const soma = mantidos.reduce((s, g) => s + g.share, 0) || 1;
+  const finais = mantidos.map((g) => ({ lab: g.lab, cor: nomear(g.lab, g.share / soma) }));
 
-  return desambiguar(
-    mantidos.map((g) => {
-      const hex = labToHex(g.lab);
-      const achado = nameOf(hex);
-      return {
-        hex,
-        name: achado.name,
-        family: familiaDe(hex, achado),
-        share: g.share / soma,
-        L: labToLch(g.lab).L,
-      };
-    }),
-  );
+  /* Braço, perna e mão não encostam no rosto — o tecido separa —, então o
+     espalhamento não chega neles e a pele sobrevive na paleta. Como a
+     referência é confiável, essas cores são *apontadas* em vez de apagadas:
+     o compositor já as traz desmarcadas e basta um toque para trazê-las de
+     volta. Apagar calado seria pior, porque a mesma distância separa pele
+     clara de um casaco bege. */
+  const candidatasPele = achadoPele
+    ? finais.filter((f) => deltaE(f.lab, achadoPele.referencia) < TOL_SUSPEITA_PELE)
+    : [];
+
+  /* Quando pele e peça estão perto demais — casaco camel encostando em perna
+     à mostra, 0.030 entre os dois — o agrupamento funde as duas num cluster
+     só, e nenhuma conta feita depois separa o que virou uma cor única.
+     Apontá-la deixaria o look sem paleta, então a regra não é sobre tamanho:
+     é que sempre tem de sobrar com o que descrever. */
+  const suspeitasDePele =
+    finais.length - candidatasPele.length >= MIN_CORES_APOS_SUSPEITA
+      ? candidatasPele.map((f) => f.cor.hex)
+      : [];
+
+  return {
+    cores: desambiguar(finais.map((f) => f.cor)),
+    pele,
+    suspeitasDePele,
+  };
+}
+
+/** Só as cores, que é o que quase todo chamador quer. */
+export function extractPalette(data: ImageData, options: ExtractOptions = {}): PaletteColor[] {
+  return analisarFoto(data, options).cores;
 }
 
 /** Acima disto, o nome do dicionário é um chute e a geometria decide. */

@@ -95,6 +95,39 @@ costuma morar — bege, areia, camel, terracota, ferrugem, marsala, jeans, petr�
 Quando duas cores caem no mesmo nome, elas viram "jeans claro" e "jeans escuro":
 uma paleta que lista "jeans 23%, jeans 21%" parece defeito, não leitura.
 
+**A pele também sai da paleta**, e pelo mesmo princípio do fundo: rastreabilidade,
+não semelhança de cor. Casar por cor não funciona aqui, e a medição diz por quê —
+toda tonalidade de pele fica a menos de 0.055 de alguma cor de roupa comum:
+
+| Pele | Colide com | Distância |
+| --- | --- | --- |
+| Clara | nude · bege · trigo | 0.020 · 0.024 · 0.034 |
+| Oliva | camel | 0.030 |
+| Castanha | caramelo · tabaco | 0.048 · 0.050 |
+| Marrom | tabaco · castanho | 0.013 · 0.040 |
+| Muito escura | chocolate | 0.009 |
+
+Com qualquer tolerância útil, "tirar o que parece pele" apagaria o casaco bege de
+quem tem pele clara — e apagar uma peça do look é pior do que deixar pele na
+paleta. Então o app acha a cor da pele **daquela pessoa**, no topo do corpo onde a
+cabeça está, e dali espalha pixel a pixel. Rosto e pescoço saem juntos; uma peça
+só cairia se encostasse no rosto *e* fosse da cor dele.
+
+Achar o rosto custou três tentativas: agrupar a banda do topo em três e escolher o
+grupo mais parecido com pele era uma loteria (num look de moletom cinza o k-means
+juntou rosto e moletom num grupo só, e a referência não saía); a média de tudo que
+parece pele misturava cabelo castanho com rosto e dava uma cor que não existe na
+foto. O que funciona é filtrar por escore e separar os dois tons da cabeça por
+luminosidade, escolhendo por **posição** — cabelo cobre o alto e as laterais, o
+rosto fica embaixo e no eixo do corpo. Nos nove looks de exemplo a referência sai
+com erro de 0.004 a 0.007.
+
+Braço e perna, que o tecido separa do rosto, o espalhamento não alcança. Essas
+cores são *apontadas* em vez de apagadas: o compositor as traz desmarcadas, com um
+toque para devolver. Dá para separá-las de roupa parecida porque membro é
+literalmente o mesmo tom do rosto (0.005–0.014 da referência) enquanto roupa
+parecida fica bem mais longe (0.039 no camel, 0.044 na saia rosa-chá).
+
 ### 2. As bolinhas nas peças
 
 Você toca na foto e diz o que é aquela peça, de que marca, de onde veio, quanto
@@ -224,8 +257,12 @@ modos — é barato e evita processar imagem no servidor.
   separação de fundo; a válvula de segurança devolve a paleta do quadro inteiro,
   então a parede entra na conta. Por isso o compositor deixa desmarcar
   manualmente uma cor que veio do fundo.
-- **Pele entra na paleta** quando há bastante pele à mostra. É uma cor que está
-  mesmo na foto, e tirá-la exigiria detecção de pessoa; dá para desmarcar.
+- **Pele e peça podem virar uma cor só.** Quando estão perto demais — casaco camel
+  encostando em perna à mostra, 0.030 entre os dois — o agrupamento funde as duas
+  e nada feito depois separa. Nesse caso o app prefere manter: melhor pele na
+  paleta do que o look sem paleta.
+- **Sem rosto visível não há remoção de pele.** Flat lay, foto só da peça ou corpo
+  cortado não dão referência, e aí nada é removido — que é o certo.
 - **HEIC** (padrão do iPhone) não é decodificado pelo navegador. O app avisa e
   pede JPG, PNG, WebP ou AVIF.
 - Não há comentários nem seguir de verdade — a camada social é curtir e salvar.

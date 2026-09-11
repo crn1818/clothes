@@ -12,7 +12,7 @@ import * as idb from './idb';
 import * as rede from './rede';
 import { clienteAtual, iniciarCliente, modoRede } from './supabase';
 import { processPhoto, type ProcessedPhoto } from './image';
-import { extractPalette } from './color/extract';
+import { analisarFoto } from './color/extract';
 import { paletteFamilies, hueFamilies, describePalette } from './color/palettes';
 import { LOOKS, PERFIS_EXEMPLO, lookSvg, svgToPngBlob } from './looks';
 import {
@@ -170,7 +170,12 @@ export function CromaProvider({ children }: { children: ReactNode }) {
 
         const png = await svgToPngBlob(lookSvg(look));
         const foto = await processPhoto(png, 'equilibrada');
-        const cores = extractPalette(foto.analysis);
+        /* Mesma regra do compositor: fora a pele do rosto, fora o que ficou
+           perto demais dela (braço, perna). */
+        const analise = analisarFoto(foto.analysis);
+        const cores = analise.cores.filter(
+          (c) => !analise.suspeitasDePele.includes(c.hex),
+        );
 
         await idb.putImage({
           id: look.id,

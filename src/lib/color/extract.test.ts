@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractPalette, paletteStats } from './extract';
+import { analisarFoto, extractPalette, paletteStats } from './extract';
 import { hexToLch, hexToRgb, rgbToHex, rgbToLab, labToHex } from './oklab';
 import { familyOf, nameOf } from './names';
 import { describePalette, paletteFamilies, resumirPaletas } from './palettes';
@@ -185,6 +185,222 @@ describe('extractPalette — separação do fundo', () => {
 
     const nomes = paleta.map((c) => c.name);
     expect(new Set(nomes).size).toBe(nomes.length);
+  });
+});
+
+/**
+ * Uma figura sintética: parede, cabeça (cabelo + rosto) e roupa no corpo.
+ *
+ * Precisa da cabeça porque é dela que sai a referência de pele — o extrator
+ * calibra na própria foto em vez de usar uma tabela de tons.
+ */
+function figura(opcoes: {
+  fundo: string;
+  cabelo: string;
+  rosto: string;
+  /** Faixas de roupa no corpo, em altura normalizada. */
+  roupa: { y0: number; y1: number; cor: string }[];
+  /** Pele visível no corpo (braços, pernas) além do rosto. */
+  peleNoCorpo?: { y0: number; y1: number }[];
+  largura?: number;
+  altura?: number;
+}): ImageData {
+  const w = opcoes.largura ?? 128;
+  const h = opcoes.altura ?? 160;
+  const data = new Uint8ClampedArray(w * h * 4);
+
+  const cabecaCx = 0.5;
+  const cabecaCy = 0.11;
+  const cabecaR = 0.075;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const fx = x / w;
+      const fy = y / h;
+      let cor = opcoes.fundo;
+
+      for (const r of opcoes.roupa) {
+        if (fx >= 0.32 && fx < 0.68 && fy >= r.y0 && fy < r.y1) cor = r.cor;
+      }
+      for (const p of opcoes.peleNoCorpo ?? []) {
+        if (fx >= 0.32 && fx < 0.68 && fy >= p.y0 && fy < p.y1) cor = opcoes.rosto;
+      }
+
+      // Cabeça: cabelo por cima, rosto no miolo de baixo.
+      const dx = (fx - cabecaCx) * (w / h);
+      const dy = fy - cabecaCy;
+      if (Math.hypot(dx, dy) < cabecaR) {
+        cor = dy > -cabecaR * 0.25 ? opcoes.rosto : opcoes.cabelo;
+      }
+
+      const { r, g, b } = hexToRgb(cor);
+      const i = (y * w + x) * 4;
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
+      data[i + 3] = 255;
+    }
+  }
+
+  return { data, width: w, height: h, colorSpace: 'srgb' } as ImageData;
+}
+
+describe('tirar a pele da paleta', () => {
+  it('remove a cor do rosto e mantém a roupa', () => {
+    const r = analisarFoto(
+      figura({
+        fundo: '#E9EEF1',
+        cabelo: '#2B1E18',
+        rosto: '#E8C4A0',
+        roupa: [
+          { y0: 0.2, y1: 0.55, cor: '#177F5F' },
+          { y0: 0.55, y1: 0.92, cor: '#18243F' },
+        ],
+        peleNoCorpo: [{ y0: 0.18, y1: 0.2 }],
+      }),
+    );
+
+    expect(r.pele).toBeDefined();
+    expect(distancia(r.pele!.hex, '#E8C4A0')).toBeLessThan(0.07);
+    for (const c of r.cores) {
+      expect(distancia(c.hex, '#E8C4A0')).toBeGreaterThan(0.06);
+    }
+    // As roupas continuam lá.
+    expect(r.cores.some((c) => c.family === 'verde')).toBe(true);
+    expect(r.cores.some((c) => c.family === 'azul')).toBe(true);
+  });
+
+  it('NÃO confunde casaco camel com pele', () => {
+    // O caso que impede resolver isto por cor: camel (h 72, C 0.092, L 0.66) e
+    // pele oliva (h 65, C 0.115, L 0.67) são quase a mesma coordenada.
+    const r = analisarFoto(
+      figura({
+        fundo: '#E9EEF1',
+        cabelo: '#2B1E18',
+        rosto: '#4E3327', // pele escura, bem longe do camel
+        roupa: [
+          { y0: 0.2, y1: 0.6, cor: '#B4884F' }, // camel
+          { y0: 0.6, y1: 0.92, cor: '#DCC9AF' }, // bege
+        ],
+      }),
+    );
+
+    const temCamel = r.cores.some((c) => distancia(c.hex, '#B4884F') < 0.06);
+    expect(temCamel).toBe(true);
+  });
+
+  it.each([
+    ['clara x bege', '#E8C4A0', '#DCC9AF'],
+    ['clara x nude', '#E8C4A0', '#E1C2AC'],
+    ['oliva x camel', '#C68642', '#B4884F'],
+    ['marrom x tabaco', '#8D5524', '#875826'],
+    ['muito escura x chocolate', '#4E3327', '#4C3122'],
+  ])('mantém a peça quando ela é quase a cor da pele (%s)', (_nome, pele, peca) => {
+    /* Estes cinco pares estão a 0.009–0.030 um do outro: é a razão de a
+       remoção ser por rastreabilidade até o rosto, e não por semelhança de
+       cor. A peça não encosta na cabeça, então tem de sobreviver. */
+    const r = analisarFoto(
+      figura({
+        fundo: '#E9EEF1',
+        cabelo: '#171210',
+        rosto: pele,
+        roupa: [
+          { y0: 0.22, y1: 0.6, cor: peca },
+          { y0: 0.6, y1: 0.92, cor: '#18243F' },
+        ],
+      }),
+    );
+
+    const sobreviveu = r.cores.some((c) => distancia(c.hex, peca) < 0.05);
+    expect(sobreviveu).toBe(true);
+  });
+
+  it('mantém tudo quando a pele é da mesma cor da roupa', () => {
+    // Pele clara + look nude: remover deixaria a paleta sem o que dizer, então
+    // a válvula da fatia máxima segura.
+    const r = analisarFoto(
+      figura({
+        fundo: '#E9EEF1',
+        cabelo: '#2B1E18',
+        rosto: '#E8C4A0',
+        roupa: [{ y0: 0.2, y1: 0.92, cor: '#E1C2AC' }],
+      }),
+    );
+
+    expect(r.cores.length).toBeGreaterThan(0);
+  });
+
+  it('aponta braço e perna, que o espalhamento não alcança', () => {
+    /* Perna à mostra não encosta no rosto — o tecido separa —, então ela sai
+       como "suspeita" em vez de removida: o compositor a traz desmarcada e um
+       toque devolve. O que a torna reconhecível é ser *literalmente* o mesmo
+       tom do rosto, a ~0.01 da referência. */
+    const r = analisarFoto(
+      figura({
+        fundo: '#E9EEF1',
+        cabelo: '#171210',
+        rosto: '#E8C4A0',
+        roupa: [{ y0: 0.22, y1: 0.62, cor: '#177F5F' }],
+        peleNoCorpo: [{ y0: 0.62, y1: 0.92 }],
+      }),
+    );
+
+    const membro = r.cores.find((c) => distancia(c.hex, '#E8C4A0') < 0.03);
+    expect(membro, 'a perna à mostra tem de aparecer na paleta').toBeDefined();
+    expect(r.suspeitasDePele).toContain(membro!.hex);
+
+    const verde = r.cores.find((c) => c.family === 'verde');
+    expect(verde, 'e a peça verde não é tocada').toBeDefined();
+    expect(r.suspeitasDePele).not.toContain(verde!.hex);
+  });
+
+  it('não esvazia a paleta quando pele e peça se fundem', () => {
+    /* Casaco camel encostando em perna à mostra, com 0.030 entre os dois: o
+       agrupamento funde as duas num cluster só e não há como separá-las
+       depois. Apontar esse cluster como pele deixaria o look sem paleta. */
+    const r = analisarFoto(
+      figura({
+        fundo: '#E9EEF1',
+        cabelo: '#171210',
+        rosto: '#C68642',
+        roupa: [{ y0: 0.22, y1: 0.62, cor: '#B4884F' }],
+        peleNoCorpo: [{ y0: 0.62, y1: 0.92 }],
+      }),
+    );
+
+    expect(r.cores.length).toBeGreaterThan(0);
+    const sobraram = r.cores.filter((c) => !r.suspeitasDePele.includes(c.hex));
+    expect(sobraram.length, 'tem de sobrar alguma cor').toBeGreaterThan(0);
+  });
+
+  it('não mexe em foto sem rosto', () => {
+    const r = analisarFoto(
+      foto({
+        fundo: '#E9EEF1',
+        pecas: [{ x0: 0.25, y0: 0.15, x1: 0.75, y1: 0.85, cor: '#A2663C' }],
+      }),
+    );
+
+    expect(r.pele).toBeUndefined();
+    expect(distancia(r.cores[0].hex, '#A2663C')).toBeLessThan(0.06);
+  });
+
+  it('respeita removerPele: false', () => {
+    const imagem = () =>
+      figura({
+        fundo: '#E9EEF1',
+        cabelo: '#2B1E18',
+        rosto: '#E8C4A0',
+        roupa: [
+          { y0: 0.2, y1: 0.55, cor: '#177F5F' },
+          { y0: 0.55, y1: 0.92, cor: '#18243F' },
+        ],
+        peleNoCorpo: [{ y0: 0.18, y1: 0.2 }],
+      });
+
+    const com = analisarFoto(imagem(), { removerPele: false });
+    expect(com.pele).toBeUndefined();
+    expect(com.cores.some((c) => distancia(c.hex, '#E8C4A0') < 0.07)).toBe(true);
   });
 });
 

@@ -9,7 +9,7 @@ import {
   IconeLixo,
   IconeVoltar,
 } from '../components/ui';
-import { extractPalette } from '../lib/color/extract';
+import { analisarFoto } from '../lib/color/extract';
 import { describePalette } from '../lib/color/palettes';
 import { formatBytes, formatMegapixels, processPhoto, QUALITY_SPECS } from '../lib/image';
 import { useCroma } from '../lib/store';
@@ -61,6 +61,9 @@ export function Compor({ onFechar }: { onFechar: () => void }) {
   const [preview, setPreview] = useState<string | null>(null);
   const [cores, setCores] = useState<PaletteColor[]>([]);
   const [excluidas, setExcluidas] = useState<string[]>([]);
+  /* Cor de pele que o extrator tirou da paleta, para poder ser devolvida. */
+  const [pele, setPele] = useState<PaletteColor | null>(null);
+  const [suspeitas, setSuspeitas] = useState<string[]>([]);
   const [pins, setPins] = useState<Pin[]>([]);
   const [legenda, setLegenda] = useState('');
 
@@ -101,8 +104,12 @@ export function Compor({ onFechar }: { onFechar: () => void }) {
         const processada = await processPhoto(arquivo, settings.quality);
         setFoto(processada);
         // A paleta sai da própria imagem já reduzida — mesma coisa que a pessoa vê.
-        setCores(extractPalette(processada.analysis, { max: 5 }));
-        setExcluidas([]);
+        const analise = analisarFoto(processada.analysis, { max: 5 });
+        setCores(analise.cores);
+        setPele(analise.pele ?? null);
+        // Braço e perna chegam desmarcados, não apagados: um toque devolve.
+        setExcluidas(analise.suspeitasDePele);
+        setSuspeitas(analise.suspeitasDePele);
         setPins([]);
       } catch (e) {
         setErro(e instanceof Error ? e.message : 'Não consegui processar essa foto.');
@@ -277,16 +284,45 @@ export function Compor({ onFechar }: { onFechar: () => void }) {
                 {describePalette(coresFinais)}
               </p>
 
+              {pele && (
+                <div className="nota-pele">
+                  <span className="nota-pele-cor" style={{ background: pele.hex }} />
+                  <span>
+                    Tirei a cor de pele da paleta — {pele.name}, {Math.round(pele.share * 100)}%
+                    da foto
+                    {suspeitas.length > 0 && ', e desmarquei o que parece braço ou perna'}.
+                  </span>
+                  <button
+                    className="btn btn-fantasma"
+                    style={{ height: 28, padding: '0 11px', fontSize: 12, flex: '0 0 auto' }}
+                    onClick={() => {
+                      if (!foto) return;
+                      const analise = analisarFoto(foto.analysis, {
+                        max: 5,
+                        removerPele: false,
+                      });
+                      setCores(analise.cores);
+                      setPele(null);
+                      setExcluidas([]);
+                      setSuspeitas([]);
+                    }}
+                  >
+                    Manter
+                  </button>
+                </div>
+              )}
+
               {cores.length > 1 && (
                 <details style={{ marginTop: 10 }}>
                   <summary
                     className="mini"
                     style={{ cursor: 'pointer', fontWeight: 600 }}
                   >
-                    Alguma cor é do fundo, não da roupa?
+                    Alguma cor não é da roupa?
                   </summary>
                   <p className="mini" style={{ margin: '6px 0 8px' }}>
-                    Desmarque para tirar da paleta. A descrição e os filtros se ajustam.
+                    Desmarque o que for parede ou pele. A descrição e os filtros se
+                    ajustam. O que já veio desmarcado é o que pareceu pele.
                   </p>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
                     {cores.map((c) => {
